@@ -8,9 +8,9 @@ from flask import Flask, jsonify, render_template_string
 
 
 MQTT_BROKER = "127.0.0.1"
+MQTT_BROKER_PUBLIC = "157.173.101.159"
 MQTT_PORT = 1883
 MQTT_TOPIC = "dht11/temperature"
-MQTT_TOPIC_HUM = "dht11/humidity"
 DASHBOARD_HOST = "0.0.0.0"
 DASHBOARD_PORT = 9272
 
@@ -19,7 +19,6 @@ state_lock = threading.Lock()
 history = deque(maxlen=80)
 state = {
     "temperature": None,
-    "humidity": None,
     "mqtt_status": "Connecting",
     "last_update": None,
     "messages": 0,
@@ -40,13 +39,13 @@ def snapshot():
 def on_connect(client, userdata, flags, rc, *extra):
     with state_lock:
         if rc == 0:
-            state["mqtt_status"] = f"Connected to {MQTT_BROKER}:{MQTT_PORT}"
+            state["mqtt_status"] = f"Connected to {MQTT_BROKER_PUBLIC}:{MQTT_PORT}"
         else:
             state["mqtt_status"] = f"Connection failed rc={rc}"
 
     if rc == 0:
-        client.subscribe([(MQTT_TOPIC, 0), (MQTT_TOPIC_HUM, 0)])
-        print(f"[MQTT] Subscribed to {MQTT_TOPIC} and {MQTT_TOPIC_HUM}")
+        client.subscribe(MQTT_TOPIC)
+        print(f"[MQTT] Subscribed to {MQTT_TOPIC}")
 
 
 def on_disconnect(client, userdata, rc, *extra):
@@ -60,17 +59,12 @@ def on_message(client, userdata, message):
     timestamp = now_text()
 
     with state_lock:
-        if message.topic == MQTT_TOPIC:
-            try:
-                state["temperature"] = float(payload)
-            except ValueError:
-                return
-        elif message.topic == MQTT_TOPIC_HUM:
-            try:
-                state["humidity"] = float(payload)
-            except ValueError:
-                return
-        else:
+        if message.topic != MQTT_TOPIC:
+            return
+
+        try:
+            state["temperature"] = float(payload)
+        except ValueError:
             return
 
         state["last_update"] = timestamp
@@ -80,7 +74,6 @@ def on_message(client, userdata, message):
                 {
                     "time": timestamp,
                     "temperature": state["temperature"],
-                    "humidity": state["humidity"],
                 }
             )
 
@@ -136,7 +129,7 @@ DASHBOARD_HTML = """
     h1 { margin: 0; font-size: 24px; line-height: 1.2; }
     .candidate { color: var(--muted); font-size: 14px; margin-top: 4px; }
     main { width: min(1120px, calc(100% - 32px)); margin: 24px auto; }
-    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; }
     .label { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
     .value { font-size: 36px; font-weight: 700; line-height: 1; }
@@ -182,10 +175,6 @@ DASHBOARD_HTML = """
         <div class="value"><span id="temperature">--</span> <span class="unit">C</span></div>
       </div>
       <div class="panel">
-        <div class="label">Humidity</div>
-        <div class="value"><span id="humidity">--</span> <span class="unit">%</span></div>
-      </div>
-      <div class="panel">
         <div class="label">MQTT Messages</div>
         <div class="value" id="messages">0</div>
       </div>
@@ -203,7 +192,7 @@ DASHBOARD_HTML = """
       <div class="panel">
         <div class="label">Recent Readings</div>
         <table>
-          <thead><tr><th>Time</th><th>Temp</th><th>Hum</th></tr></thead>
+          <thead><tr><th>Time</th><th>Temperature</th></tr></thead>
           <tbody id="history"></tbody>
         </table>
       </div>
@@ -211,7 +200,7 @@ DASHBOARD_HTML = """
 
     <section class="meta panel">
       <div class="label">MQTT Transmission</div>
-      <div class="small">Broker <strong>{{ broker }}</strong>, topics <strong>{{ temp_topic }}</strong> and <strong>{{ hum_topic }}</strong></div>
+      <div class="small">Broker <strong>{{ broker }}</strong>, topic <strong>{{ temp_topic }}</strong></div>
       <div class="small" id="mqttStatus"></div>
     </section>
   </main>
@@ -263,7 +252,6 @@ DASHBOARD_HTML = """
 
     function render(data) {
       setText("temperature", data.temperature === null ? "--" : data.temperature.toFixed(1));
-      setText("humidity", data.humidity === null ? "--" : data.humidity.toFixed(1));
       setText("messages", data.messages);
       setText("lastUpdate", data.last_update || "--");
       setText("mqttStatus", data.mqtt_status);
@@ -273,10 +261,9 @@ DASHBOARD_HTML = """
         <tr>
           <td>${item.time.split(" ").pop()}</td>
           <td>${item.temperature.toFixed(1)} C</td>
-          <td>${item.humidity === null ? "--" : item.humidity.toFixed(1) + " %"}</td>
         </tr>
       `).join("");
-      document.getElementById("history").innerHTML = rows || "<tr><td colspan='3'>No readings yet</td></tr>";
+      document.getElementById("history").innerHTML = rows || "<tr><td colspan='2'>No readings yet</td></tr>";
       drawChart(data.history);
     }
 
@@ -290,7 +277,7 @@ DASHBOARD_HTML = """
     }
 
     poll();
-    setInterval(poll, 1000);
+    setInterval(poll, 300);
   </script>
 </body>
 </html>
@@ -301,9 +288,8 @@ DASHBOARD_HTML = """
 def dashboard():
     return render_template_string(
         DASHBOARD_HTML,
-        broker=escape(f"{MQTT_BROKER}:{MQTT_PORT}"),
+        broker=escape(f"{MQTT_BROKER_PUBLIC}:{MQTT_PORT}"),
         temp_topic=escape(MQTT_TOPIC),
-        hum_topic=escape(MQTT_TOPIC_HUM),
     )
 
 
@@ -314,8 +300,8 @@ def api_state():
 
 def main():
     print(f"Dashboard: http://0.0.0.0:{DASHBOARD_PORT}")
-    print(f"MQTT broker: {MQTT_BROKER}:{MQTT_PORT}")
-    print(f"MQTT topics: {MQTT_TOPIC}, {MQTT_TOPIC_HUM}")
+    print(f"MQTT broker: {MQTT_BROKER_PUBLIC}:{MQTT_PORT}")
+    print(f"MQTT topic: {MQTT_TOPIC}")
     threading.Thread(target=mqtt_worker, daemon=True).start()
     app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, threaded=True)
 
